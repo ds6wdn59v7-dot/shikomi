@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>仕込み図エディタ | shikomi</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+</head>
+<body>
+  <div id="app">
+    <!-- ツールバー -->
+    <div id="toolbar">
+      <strong>shikomi</strong>
+      <div class="view-toggle-container" style="display: flex; gap: 4px; margin-right: 16px; background-color: #f3f4f6; padding: 3px; border-radius: 6px;">
+        <button id="btn-view-plot" class="toggle-btn active" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">配置図</button>
+        <button id="btn-view-dmx" class="toggle-btn" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">DMX系統図 (照明)</button>
+        <button id="btn-view-audio" class="toggle-btn" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">音響・映像系統図</button>
+      </div>
+      <div id="layout-toggle-container" style="display: flex; gap: 4px; margin-right: 16px; background-color: #f3f4f6; padding: 3px; border-radius: 6px;">
+        <button id="btn-layout-top" class="toggle-btn" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">平面図のみ</button>
+        <button id="btn-layout-front" class="toggle-btn" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">正面図のみ</button>
+        <button id="btn-layout-side" class="toggle-btn" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">側面図のみ</button>
+        <button id="btn-layout-split" class="toggle-btn active" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;">3面分割</button>
+      </div>
+      <div id="panel-toggle-container" style="display: flex; gap: 4px; margin-right: 16px; background-color: #f3f4f6; padding: 3px; border-radius: 6px;">
+        <button id="btn-toggle-palette" class="toggle-btn active" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;" title="左側機材パレットを表示/非表示">左パネル</button>
+        <button id="btn-toggle-properties" class="toggle-btn active" style="font-size: 12px; padding: 4px 10px; border: none; background: none; border-radius: 4px; cursor: pointer; transition: all 0.2s;" title="右側属性パネルを表示/非表示">右パネル</button>
+      </div>
+      <button id="btn-new">新規</button>
+      <button id="btn-open">開く</button>
+      <button id="btn-save">保存</button>
+      <button id="btn-bg">背景読込</button>
+      <button id="btn-scale">縮尺合わせ</button>
+      <button id="btn-library">機材管理</button>
+      <button id="btn-fixtures-list">機材リスト</button>
+      <div style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+        <select id="export-format" style="font-size:12px; padding:6px; border:1px solid #d1d5db; border-radius:6px; background-color:#ffffff; cursor:pointer;">
+          <option value="pdf">PDFで書き出し (.pdf)</option>
+          <option value="png">PNG画像で書き出し (.png)</option>
+          <option value="jpeg">JPEG画像で書き出し (.jpg)</option>
+        </select>
+        <button id="btn-export" style="background-color:#2563eb; color:#ffffff; border-color:#2563eb;">書き出し</button>
+      </div>
+    </div>
+
+    <!-- メインエディタエリア -->
+    <div id="main">
+      <!-- 左サイドバー：レイヤとパレット -->
+      <div id="palette">
+        <!-- レイヤ切り替え -->
+        <div class="layer-section">
+          <div class="hint">表示レイヤ</div>
+          <div class="layer-list">
+            <div class="layer-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <label class="layer-item" style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;">
+                <input type="checkbox" id="layer-stage" checked />
+                <span>舞台</span>
+              </label>
+              <button class="lock-btn" id="lock-stage" style="padding: 2px 6px; font-size: 11px; background: none; border: none; cursor: pointer; transition: opacity 0.2s;" title="舞台レイヤをロック/ロック解除">🔓</button>
+            </div>
+            <div class="layer-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <label class="layer-item" style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;">
+                <input type="checkbox" id="layer-sound" checked />
+                <span>音響</span>
+              </label>
+              <button class="lock-btn" id="lock-sound" style="padding: 2px 6px; font-size: 11px; background: none; border: none; cursor: pointer; transition: opacity 0.2s;" title="音響レイヤをロック/ロック解除">🔓</button>
+            </div>
+            <div class="layer-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <label class="layer-item" style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;">
+                <input type="checkbox" id="layer-lighting" checked />
+                <span>照明</span>
+              </label>
+              <button class="lock-btn" id="lock-lighting" style="padding: 2px 6px; font-size: 11px; background: none; border: none; cursor: pointer; transition: opacity 0.2s;" title="照明レイヤをロック/ロック解除">🔓</button>
+            </div>
+            <div class="layer-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <label class="layer-item" style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;">
+                <input type="checkbox" id="layer-video" checked />
+                <span>映像</span>
+              </label>
+              <button class="lock-btn" id="lock-video" style="padding: 2px 6px; font-size: 11px; background: none; border: none; cursor: pointer; transition: opacity 0.2s;" title="映像レイヤをロック/ロック解除">🔓</button>
+            </div>
+          </div>
+          <label class="layer-item" style="margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;">
+            <input type="checkbox" id="toggle-beam" />
+            <span>ビーム表示</span>
+          </label>
+        </div>
+
+        <!-- カテゴリ切り替えタブ -->
+        <div class="tab-section">
+          <button class="tab-btn active" data-tab="stage">舞台</button>
+          <button class="tab-btn" data-tab="sound">音響</button>
+          <button class="tab-btn" data-tab="lighting">照明</button>
+          <button class="tab-btn" data-tab="video">映像</button>
+        </div>
+
+        <!-- パレットアイテムリスト -->
+        <div class="palette-list-container" id="palette-list">
+          <!-- JSで機材ボタンが動的に挿入されます -->
+        </div>
+      </div>
+
+      <!-- 中央キャンバス -->
+      <div id="canvas-wrap">
+        <div id="split-container" class="layout-split">
+          <div class="canvas-view-box" id="view-box-top">
+            <div class="view-box-label">平面図 (Top)</div>
+            <svg id="canvas" width="1000" height="700" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+          <div class="canvas-view-box" id="view-box-front">
+            <div class="view-box-label">正面図 (Front / X-Z)</div>
+            <svg id="canvas-front" width="1000" height="700" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+          <div class="canvas-view-box" id="view-box-side">
+            <div class="view-box-label">右側面図 (Right Side / Y-Z)</div>
+            <svg id="canvas-side" width="1000" height="700" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右サイドバー：属性パネル -->
+      <div id="properties">
+        <div class="hint">属性パネル</div>
+        <div style="padding: 10px 0; color: #666; font-size: 12px; text-align: center;">
+          図面上の機材を選択してください
+        </div>
+      </div>
+    </div>
+
+    <!-- 下部：パッチ表 -->
+    <div id="patch">
+      <div class="hint">パッチ表（自動生成）</div>
+      <!-- JSでパッチ表と電源集計が動的に挿入されます -->
+    </div>
+  </div>
+  <script>
+    // 全ESモジュールのキャッシュバスティング
+    const v = Date.now();
+    const modules = [
+      "app", "model", "background", "scale", "fixtures", "properties",
+      "patch", "storage", "custom-library", "dmx", "audio_diagram", "border", "elevation", "fixtures-list"
+    ];
+    const imports = {};
+    for (const m of modules) {
+      imports[`./src/${m}.js`] = `./src/${m}.js?v=${v}`;
+      imports[`./${m}.js`] = `./src/${m}.js?v=${v}`;
+    }
+    const map = document.createElement("script");
+    map.type = "importmap";
+    map.textContent = JSON.stringify({ imports });
+    document.currentScript.after(map);
+  </script>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

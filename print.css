@@ -1,0 +1,7 @@
+@media print {
+  #toolbar, #palette, #properties { display: none; }
+  #app { display: block; height: auto; }
+  #main { display: block; }
+  #canvas-wrap { overflow: visible; }
+  #patch { max-height: none; border: none; }
+}
