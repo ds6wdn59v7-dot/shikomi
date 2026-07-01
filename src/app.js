@@ -28,7 +28,8 @@ const state = {
   dragStartId: null,
   dragStartCoords: null,
   showBeam: false,
-  clipboard: null
+  clipboard: null,
+  plotViewBox: null // 平面図のズーム/パン用 viewBox 上書き（null=自動フィット）
 };
 
 const svg = document.getElementById("canvas");
@@ -504,7 +505,8 @@ export function render(opts = {}) {
         svg.setAttribute("width", String(vw));
         svg.setAttribute("height", String(vh));
         const vbX = bg.image ? 0 : -vw / 2;
-        svg.setAttribute("viewBox", `${vbX} ${vbY} ${vw} ${vh}`);
+        const vb = state.plotViewBox || { x: vbX, y: vbY, w: vw, h: vh };
+        svg.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
         svg.style.aspectRatio = `${vw} / ${vh}`;
       }
 
@@ -1291,6 +1293,40 @@ function scheduleDragRender(viewType) {
     render({ dragView: _dragPendingView });
   });
 }
+
+// 平面図のズーム: Shift+ホイールでカーソル中心に拡大/縮小。0キーでリセット(自動フィット)。
+const PLOT_ZOOM_MAX = 8;
+function resetPlotZoom() {
+  if (state.plotViewBox) { state.plotViewBox = null; render(); }
+}
+svg.addEventListener("wheel", e => {
+  if (!e.shiftKey) return;                 // Shift+ホイールのみズーム
+  if (state.currentView !== "plot") return;
+  if (state.project.meta.showBorder && state.plotLayout === "top") return; // 図面枠表示中は無効
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const vbAttr = svg.getAttribute("viewBox");
+  if (!vbAttr) return;
+  e.preventDefault();
+  const [x, y, w, h] = vbAttr.split(/\s+/).map(Number);
+  // 自動フィット時のベース幅(これより広い viewBox にはしない=フィットに戻す)
+  const bg2 = state.project.background, meta2 = state.project.meta;
+  let baseW = (meta2.plotWidth || 10000) + 2500;
+  if (bg2.image && bg2.width) baseW = bg2.width;
+  // カーソルのコンテンツ座標(ズーム後も同じ点がカーソル下に来るようにする)
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  const cx = x + fx * w, cy = y + fy * h;
+  const factor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 上スクロール=拡大(viewBox縮小)
+  let nw = w * factor;
+  const minW = baseW / PLOT_ZOOM_MAX;          // 最大ズーム
+  if (nw < minW) nw = minW;
+  if (nw >= baseW) { resetPlotZoom(); return; } // フィット相当まで縮小=リセット
+  const nh = nw * (h / w);
+  const nx = cx - fx * nw, ny = cy - fy * nh;
+  state.plotViewBox = { x: nx, y: ny, w: nw, h: nh };
+  svg.setAttribute("viewBox", `${nx} ${ny} ${nw} ${nh}`); // 即時反映(フル再描画なし)
+}, { passive: false });
 svg.addEventListener("mousedown", e => {
   // 1. ポート（出力ポート）クリックの判定
   const port = e.target.closest("circle.port-out");
@@ -1618,6 +1654,12 @@ function getShortcutKey(e) {
 window.addEventListener("keydown", e => {
   if (e.target && e.target.matches && e.target.matches("input, textarea")) return;
   if (e.isComposing) return;
+
+  // 0 キーで平面図のズームをリセット(自動フィットに戻す)
+  if (e.key === "0" && !e.metaKey && !e.ctrlKey) {
+    resetPlotZoom();
+    return;
+  }
 
   // Command + Z または Ctrl + Z で Undo
   const isUndo = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z";
