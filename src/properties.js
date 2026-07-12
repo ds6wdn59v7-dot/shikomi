@@ -1,3 +1,5 @@
+import { ZONE_KINDS } from "./zones.js";
+
 const POS  = [
   { key: "x", label: "X",    type: "number", step: "1"   },
   { key: "y", label: "Y",    type: "number", step: "1"   },
@@ -556,5 +558,117 @@ function setupInputAutoSelect(input) {
       input.select();
     }, 0);
   });
+}
+
+export function renderZoneProperties(container, zone, onChange) {
+  container.innerHTML = "<div class='hint'>属性パネル（建物区画）</div>";
+
+  const header = document.createElement("div");
+  header.style.cssText = "font-weight: bold; font-size: 13px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #ddd;";
+  header.textContent = `区画: ${zone.label || zone.kind}`;
+  container.appendChild(header);
+
+  function makeRow(labelText, inputEl) {
+    const group = document.createElement("div");
+    group.className = "prop-group";
+    const label = document.createElement("div");
+    label.className = "prop-group-label";
+    label.textContent = labelText;
+    group.appendChild(label);
+    group.appendChild(inputEl);
+    container.appendChild(group);
+  }
+
+  const kindSelect = document.createElement("select");
+  kindSelect.className = "prop-input";
+  kindSelect.addEventListener("keydown", e => e.stopPropagation());
+  for (const kind of ZONE_KINDS) {
+    const opt = document.createElement("option");
+    opt.value = kind;
+    opt.textContent = kind;
+    if (zone.kind === kind) opt.selected = true;
+    kindSelect.appendChild(opt);
+  }
+  kindSelect.addEventListener("change", () => onChange("kind", kindSelect.value));
+  makeRow("種別", kindSelect);
+
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.className = "prop-input";
+  labelInput.value = zone.label || "";
+  labelInput.addEventListener("keydown", e => e.stopPropagation());
+  labelInput.addEventListener("change", () => onChange("label", labelInput.value));
+  makeRow("ラベル", labelInput);
+
+  const numRow = document.createElement("div");
+  numRow.className = "prop-row prop-row-2";
+  for (const [key, label] of [["x", "位置X(mm)"], ["y", "位置Y(mm)"]]) {
+    const cell = document.createElement("div");
+    cell.className = "prop-cell";
+    const cellLabel = document.createElement("div");
+    cellLabel.className = "prop-cell-label";
+    cellLabel.textContent = label;
+    cell.appendChild(cellLabel);
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "prop-input";
+    input.value = zone[key];
+    input.addEventListener("keydown", e => e.stopPropagation());
+    input.addEventListener("change", () => onChange(key, Number(input.value)));
+    cell.appendChild(input);
+    numRow.appendChild(cell);
+  }
+  const numGroup = document.createElement("div");
+  numGroup.className = "prop-group";
+  const numGroupLabel = document.createElement("div");
+  numGroupLabel.className = "prop-group-label";
+  numGroupLabel.textContent = "位置";
+  numGroup.appendChild(numGroupLabel);
+  numGroup.appendChild(numRow);
+  container.appendChild(numGroup);
+
+  const sizeRow = document.createElement("div");
+  sizeRow.className = "prop-row prop-row-2";
+  for (const [key, label] of [["width", "幅(mm)"], ["height", "奥行き(mm)"]]) {
+    const cell = document.createElement("div");
+    cell.className = "prop-cell";
+    const cellLabel = document.createElement("div");
+    cellLabel.className = "prop-cell-label";
+    cellLabel.textContent = label;
+    cell.appendChild(cellLabel);
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "1";
+    input.className = "prop-input";
+    input.value = zone[key];
+    input.addEventListener("keydown", e => e.stopPropagation());
+    input.addEventListener("change", () => {
+      const v = Math.max(1, Number(input.value));
+      input.value = String(v);
+      onChange(key, v);
+    });
+    cell.appendChild(input);
+    sizeRow.appendChild(cell);
+  }
+  const sizeGroup = document.createElement("div");
+  sizeGroup.className = "prop-group";
+  const sizeGroupLabel = document.createElement("div");
+  sizeGroupLabel.className = "prop-group-label";
+  sizeGroupLabel.textContent = "寸法";
+  sizeGroup.appendChild(sizeGroupLabel);
+  sizeGroup.appendChild(sizeRow);
+  container.appendChild(sizeGroup);
+
+  const rotInput = document.createElement("input");
+  rotInput.type = "number";
+  rotInput.className = "prop-input";
+  rotInput.value = zone.rotation;
+  rotInput.addEventListener("keydown", e => e.stopPropagation());
+  rotInput.addEventListener("change", () => {
+    const norm = ((Number(rotInput.value) % 360) + 360) % 360;
+    rotInput.value = String(norm);
+    onChange("rotation", norm);
+  });
+  makeRow("回転(度)", rotInput);
 }
 

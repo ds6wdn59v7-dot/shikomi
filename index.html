@@ -34,6 +34,7 @@
       <button id="btn-save">保存</button>
       <button id="btn-bg">背景読込</button>
       <button id="btn-scale">縮尺合わせ</button>
+      <button id="btn-add-zone">＋区画追加</button>
       <button id="btn-library">機材管理</button>
       <button id="btn-fixtures-list">機材リスト</button>
       <div style="margin-left:auto; display:flex; gap:6px; align-items:center;">
@@ -81,6 +82,12 @@
                 <span>映像</span>
               </label>
               <button class="lock-btn" id="lock-video" style="padding: 2px 6px; font-size: 11px; background: none; border: none; cursor: pointer; transition: opacity 0.2s;" title="映像レイヤをロック/ロック解除">🔓</button>
+            </div>
+            <div class="layer-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <label class="layer-item" style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;">
+                <input type="checkbox" id="layer-zone" checked />
+                <span>区画</span>
+              </label>
             </div>
           </div>
           <label class="layer-item" style="margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;">

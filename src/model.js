@@ -11,6 +11,19 @@ const DEFAULT_FIXTURE = {
   url: ""
 };
 
+const DEFAULT_ZONE = {
+  kind: "その他",   // "ステージ" | "控室" | "搬入口" | "通路" | "その他"
+  label: "",
+  x: 0, y: 0,        // 中心点(mm)
+  width: 2000,
+  height: 2000,
+  rotation: 0
+};
+
+export function createZone(partial = {}) {
+  return { id: crypto.randomUUID(), ...DEFAULT_ZONE, ...partial };
+}
+
 export function createFixture(partial = {}) {
   const merged = { id: crypto.randomUUID(), ...DEFAULT_FIXTURE, ...partial };
   if (merged.category === "lighting" && (merged.universe === undefined || merged.universe === "")) {
@@ -37,6 +50,7 @@ export function createProject() {
     backgroundSide: { image: null, opacity: 1 },
     fixtures: [],
     connections: [],
+    zones: [],
     fixtureLibrary: []
   };
 }
@@ -83,6 +97,10 @@ export function deserialize(text) {
       })
     : base.fixtures;
 
+  const zones = Array.isArray(raw?.zones)
+    ? raw.zones.map(z => ({ ...DEFAULT_ZONE, id: z.id ?? crypto.randomUUID(), ...z }))
+    : base.zones;
+
   return {
     meta: {
       name: raw?.meta?.name ?? base.meta.name,
@@ -111,6 +129,7 @@ export function deserialize(text) {
     },
     fixtures,
     connections: Array.isArray(raw?.connections) ? raw.connections : base.connections,
+    zones,
     fixtureLibrary: Array.isArray(raw?.fixtureLibrary) ? raw.fixtureLibrary : base.fixtureLibrary
   };
 }

@@ -1,8 +1,9 @@
-import { createProject, createFixture, serialize, deserialize } from "./model.js";
+import { createProject, createFixture, createZone, serialize, deserialize } from "./model.js";
 import { loadImageFile, loadPdfFirstPage } from "./background.js";
 import { pxPerMmFromCalibration } from "./scale.js";
 import { FIXTURE_LIBRARY, getFullLibrary, renderFixture } from "./fixtures.js";
-import { renderProperties, renderConnectionProperties, renderProjectProperties } from "./properties.js";
+import { renderProperties, renderConnectionProperties, renderProjectProperties, renderZoneProperties } from "./properties.js";
+import { renderZone } from "./zones.js";
 import { buildPatchRows, powerSummary } from "./patch.js";
 import { downloadJson, readJsonFile, autosave, loadAutosave } from "./storage.js";
 import { loadCustomLibrary, openCustomLibraryModal } from "./custom-library.js";
@@ -29,7 +30,9 @@ const state = {
   dragStartCoords: null,
   showBeam: false,
   clipboard: null,
-  plotViewBox: null // 平面図のズーム/パン用 viewBox 上書き（null=自動フィット）
+  plotViewBox: null, // 平面図のズーム/パン用 viewBox 上書き（null=自動フィット）
+  selectedZoneId: null,
+  showZones: true
 };
 
 const svg = document.getElementById("canvas");
@@ -64,6 +67,10 @@ export function undo() {
     if (state.selectedId) {
       const exists = state.project.fixtures.some(f => f.id === state.selectedId);
       if (!exists) state.selectedId = null;
+    }
+    if (state.selectedZoneId) {
+      const zoneExists = state.project.zones.some(z => z.id === state.selectedZoneId);
+      if (!zoneExists) state.selectedZoneId = null;
     }
     lastSaveTime = 0; // 次回のアクションで確実に保存されるようにクリア
     render();
@@ -568,6 +575,13 @@ export function render(opts = {}) {
         container.appendChild(wl);
       }
 
+      // 1-2b. 建物区画の描画（区画レイヤ表示中のみ、平面図のみ）
+      if (state.showZones) {
+        for (const zone of state.project.zones) {
+          renderZone(container, zone, zone.id === state.selectedZoneId);
+        }
+      }
+
       // 1-3. 機材の描画
       const sortedPlot = [...filteredPlot].sort((a, b) => (a.z || 0) - (b.z || 0));
       const iconScale = vw / 1000;
@@ -690,6 +704,27 @@ export function render(opts = {}) {
       renderConnectionProperties(document.getElementById("properties"), selConn, state.project.fixtures, (action, data) => {
         handleConnectionChange(action, data);
       });
+    } else if (state.selectedZoneId) {
+      const selZone = state.project.zones.find(z => z.id === state.selectedZoneId) || null;
+      if (selZone) {
+        renderZoneProperties(document.getElementById("properties"), selZone, (key, value) => {
+          saveHistory();
+          selZone[key] = value;
+          render({ skipProperties: true });
+          autosave(serialize(state.project));
+        });
+      } else {
+        state.selectedZoneId = null;
+        renderProjectProperties(document.getElementById("properties"), state.project, (key, value) => {
+          saveHistory();
+          if (key === "plotWidth" || key === "plotHeight") {
+            render({ dragView: "plot" });
+          } else {
+            render({ skipProperties: true });
+          }
+          autosave(serialize(state.project));
+        });
+      }
     } else {
       const sel = state.project.fixtures.find(f => f.id === state.selectedId) || null;
       if (sel) {
@@ -1038,6 +1073,24 @@ document.getElementById("btn-scale").addEventListener("click", () => {
   alert("図面上で既知の距離の端から端を2点クリックしてください");
 });
 
+// 区画追加
+document.getElementById("btn-add-zone").addEventListener("click", () => {
+  if (state.currentView !== "plot") return;
+  saveHistory();
+  const meta = state.project.meta;
+  // x=0 は平面図の水平中心（viewBoxが -vw/2 起点のため）。y は plotHeight の中間点に配置する。
+  const zone = createZone({
+    x: 0,
+    y: (meta.plotHeight || 8000) / 2
+  });
+  state.project.zones.push(zone);
+  state.selectedId = null;
+  state.selectedConnectionId = null;
+  state.selectedZoneId = zone.id;
+  render();
+  autosave(serialize(state.project));
+});
+
 // キャンバスクリック (縮尺合わせと選択解除)
 svg.addEventListener("click", (e) => {
   if (state.currentView !== "plot") return; // 配置図ビュー以外では縮尺合わせのクリックを無視
@@ -1059,11 +1112,13 @@ svg.addEventListener("click", (e) => {
       calibPts = null;
     }
   } else {
-    // 機材以外の部分をクリックしたら選択解除
+    // 機材・区画以外の部分をクリックしたら選択解除
     const g = e.target.closest("g[data-id]");
-    if (!g) {
+    const zoneG = e.target.closest("g[data-zone-id]");
+    if (!g && !zoneG) {
       state.selectedId = null;
       state.selectedConnectionId = null;
+      state.selectedZoneId = null;
       render();
     }
   }
@@ -1099,6 +1154,14 @@ function updateVisibleLayers() {
 
 ["stage", "sound", "lighting", "video"].forEach(cat => {
   document.getElementById(`layer-${cat}`).addEventListener("change", updateVisibleLayers);
+});
+
+document.getElementById("layer-zone").addEventListener("change", () => {
+  state.showZones = document.getElementById("layer-zone").checked;
+  if (!state.showZones && state.selectedZoneId) {
+    state.selectedZoneId = null;
+  }
+  render();
 });
 
 // レイヤロック切り替え
@@ -1282,6 +1345,7 @@ svgSide.addEventListener("drop", e => {
 
 // 機材ドラッグ移動・クリック選択、およびポート結線ドラッグ
 let dragging = null;
+let draggingZone = null;
 // ドラッグ中は requestAnimationFrame で 1フレーム1回に集約し、操作中ビューのみ描画
 let _dragRafId = null;
 let _dragPendingView = null;
@@ -1355,7 +1419,25 @@ svg.addEventListener("mousedown", e => {
 
   // 2. 機材のクリック選択・ドラッグ移動判定
   const g = e.target.closest("g[data-id]");
-  if (!g) return;
+  if (!g) {
+    // 機材でなければ区画のクリック選択・ドラッグ開始を判定
+    const zoneG = e.target.closest("g[data-zone-id]");
+    if (zoneG && state.currentView === "plot" && state.showZones) {
+      const zoneId = zoneG.dataset.zoneId;
+      const zone = state.project.zones.find(z => z.id === zoneId);
+      if (zone) {
+        state.selectedId = null;
+        state.selectedConnectionId = null;
+        state.selectedZoneId = zoneId;
+        const r = svg.getBoundingClientRect();
+        const { x: mouseX, y: mouseY } = screenToLogical(e.clientX - r.left, e.clientY - r.top);
+        saveHistory();
+        draggingZone = { zone, offX: mouseX - zone.x, offY: mouseY - zone.y };
+        render();
+      }
+    }
+    return;
+  }
   const id = g.dataset.id;
   const f = state.project.fixtures.find(x => x.id === id);
   
@@ -1365,6 +1447,7 @@ svg.addEventListener("mousedown", e => {
 
   state.selectedId = id;
   state.selectedConnectionId = null;
+  state.selectedZoneId = null;
 
   if (state.currentView === "plot") {
     // 配置図ビューのときのみドラッグ移動を有効化
@@ -1381,17 +1464,19 @@ svgFront.addEventListener("mousedown", e => {
   if (!g) {
     state.selectedId = null;
     state.selectedConnectionId = null;
+    state.selectedZoneId = null;
     render();
     return;
   }
   const id = g.dataset.id;
   const f = state.project.fixtures.find(x => x.id === id);
-  
+
   const cat = f.category || "lighting";
   if (!state.visibleLayers.includes(cat) || state.lockedLayers.includes(cat)) return;
 
   state.selectedId = id;
   state.selectedConnectionId = null;
+  state.selectedZoneId = null;
 
   if (state.currentView === "plot" && (state.plotLayout === "split" || state.plotLayout === "front")) {
     const r = svgFront.getBoundingClientRect();
@@ -1427,17 +1512,19 @@ svgSide.addEventListener("mousedown", e => {
   if (!g) {
     state.selectedId = null;
     state.selectedConnectionId = null;
+    state.selectedZoneId = null;
     render();
     return;
   }
   const id = g.dataset.id;
   const f = state.project.fixtures.find(x => x.id === id);
-  
+
   const cat = f.category || "lighting";
   if (!state.visibleLayers.includes(cat) || state.lockedLayers.includes(cat)) return;
 
   state.selectedId = id;
   state.selectedConnectionId = null;
+  state.selectedZoneId = null;
 
   if (state.currentView === "plot" && (state.plotLayout === "split" || state.plotLayout === "side")) {
     const r = svgSide.getBoundingClientRect();
@@ -1469,6 +1556,17 @@ svgSide.addEventListener("mousedown", e => {
 });
 
 window.addEventListener("mousemove", e => {
+  if (draggingZone) {
+    const r = svg.getBoundingClientRect();
+    const { x: mouseX, y: mouseY } = screenToLogical(e.clientX - r.left, e.clientY - r.top);
+    const targetX = mouseX - draggingZone.offX;
+    const targetY = mouseY - draggingZone.offY;
+    const clamped = clampToBounds(targetX, targetY);
+    draggingZone.zone.x = clamped.x;
+    draggingZone.zone.y = clamped.y;
+    scheduleDragRender("plot");
+    return;
+  }
   if (dragging) {
     if (dragging.viewType === "front") {
       const r = svgFront.getBoundingClientRect();
@@ -1595,6 +1693,14 @@ window.addEventListener("mouseup", e => {
   if (wasDragging) {
     if (_dragRafId !== null) { cancelAnimationFrame(_dragRafId); _dragRafId = null; }
     render();
+  }
+
+  const wasDraggingZone = draggingZone;
+  draggingZone = null;
+  if (wasDraggingZone) {
+    if (_dragRafId !== null) { cancelAnimationFrame(_dragRafId); _dragRafId = null; }
+    render();
+    autosave(serialize(state.project));
   }
 
   if (state.dragStartId) {
@@ -1768,6 +1874,38 @@ window.addEventListener("keydown", e => {
       render();
       return;
     }
+  }
+
+  // 区画 (zones) 選択時のキーボード操作
+  if (state.selectedZoneId) {
+    const zi = state.project.zones.findIndex(z => z.id === state.selectedZoneId);
+    if (zi < 0) { state.selectedZoneId = null; return; }
+    const zone = state.project.zones[zi];
+    if (key === "y") {
+      zone.rotation = (zone.rotation + 15) % 360;
+      e.preventDefault();
+      render();
+    } else if (key === "Y") {
+      zone.rotation = (zone.rotation - 15 + 360) % 360;
+      e.preventDefault();
+      render();
+    } else if (key === "d") {
+      if (state.currentView !== "plot") return;
+      const { id, ...rest } = zone;
+      const copy = createZone({ ...rest, x: zone.x + 200, y: zone.y + 200 });
+      state.project.zones.push(copy);
+      state.selectedZoneId = copy.id;
+      e.preventDefault();
+      render();
+    } else if (key === "Delete" || key === "Backspace") {
+      state.project.zones.splice(zi, 1);
+      state.selectedZoneId = null;
+      render();
+    }
+    if (["y", "Y", "d", "Delete", "Backspace"].includes(key)) {
+      autosave(serialize(state.project));
+    }
+    return;
   }
 
   // 以下は図面上の機材 (fixtures) 選択時の処理
