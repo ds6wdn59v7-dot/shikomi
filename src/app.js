@@ -32,7 +32,9 @@ const state = {
   clipboard: null,
   plotViewBox: null, // 平面図のズーム/パン用 viewBox 上書き（null=自動フィット）
   selectedZoneId: null,
-  showZones: true
+  showZones: true,
+  frontViewBox: null, // 正面図のズーム/パン用 viewBox 上書き（null=自動フィット）
+  sideViewBox: null   // 側面図のズーム/パン用 viewBox 上書き（null=自動フィット）
 };
 
 const svg = document.getElementById("canvas");
@@ -42,6 +44,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 // Undo履歴管理
 const undoStack = [];
+const redoStack = [];
 const MAX_UNDO_LIMIT = 50;
 const UNDO_THROTTLE_MS = 1200; // 1.2秒以内の連続変更は同一変更セッションとしてマージ
 let lastSaveTime = 0;
@@ -56,11 +59,13 @@ export function saveHistory() {
     undoStack.shift();
   }
   undoStack.push(serialize(state.project));
+  redoStack.length = 0; // 新しい編集操作でredo履歴は破棄する
   lastSaveTime = now;
 }
 
 export function undo() {
   if (undoStack.length === 0) return;
+  const currentStateStr = serialize(state.project);
   const previousStateStr = undoStack.pop();
   try {
     state.project = deserialize(previousStateStr);
@@ -72,10 +77,35 @@ export function undo() {
       const zoneExists = state.project.zones.some(z => z.id === state.selectedZoneId);
       if (!zoneExists) state.selectedZoneId = null;
     }
+    if (redoStack.length >= MAX_UNDO_LIMIT) redoStack.shift();
+    redoStack.push(currentStateStr);
     lastSaveTime = 0; // 次回のアクションで確実に保存されるようにクリア
     render();
   } catch (err) {
     console.error("Undo failed:", err);
+  }
+}
+
+export function redo() {
+  if (redoStack.length === 0) return;
+  const currentStateStr = serialize(state.project);
+  const nextStateStr = redoStack.pop();
+  try {
+    state.project = deserialize(nextStateStr);
+    if (state.selectedId) {
+      const exists = state.project.fixtures.some(f => f.id === state.selectedId);
+      if (!exists) state.selectedId = null;
+    }
+    if (state.selectedZoneId) {
+      const zoneExists = state.project.zones.some(z => z.id === state.selectedZoneId);
+      if (!zoneExists) state.selectedZoneId = null;
+    }
+    if (undoStack.length >= MAX_UNDO_LIMIT) undoStack.shift();
+    undoStack.push(currentStateStr);
+    lastSaveTime = 0;
+    render();
+  } catch (err) {
+    console.error("Redo failed:", err);
   }
 }
 
@@ -648,7 +678,8 @@ export function render(opts = {}) {
       } else {
         svgFront.setAttribute("width", "1000");
         svgFront.setAttribute("height", "700");
-        svgFront.setAttribute("viewBox", "0 0 1000 700");
+        const fvb = state.frontViewBox || { x: 0, y: 0, w: 1000, h: 700 };
+        svgFront.setAttribute("viewBox", `${fvb.x} ${fvb.y} ${fvb.w} ${fvb.h}`);
         svgFront.style.aspectRatio = "1000 / 700";
         renderElevation(svgFront, filteredPlot, state.selectedId, "front", handleElevationSelect, library, bgFront, state.showBeam);
       }
@@ -686,7 +717,8 @@ export function render(opts = {}) {
       } else {
         svgSide.setAttribute("width", "1000");
         svgSide.setAttribute("height", "700");
-        svgSide.setAttribute("viewBox", "0 0 1000 700");
+        const svb = state.sideViewBox || { x: 0, y: 0, w: 1000, h: 700 };
+        svgSide.setAttribute("viewBox", `${svb.x} ${svb.y} ${svb.w} ${svb.h}`);
         svgSide.style.aspectRatio = "1000 / 700";
         renderElevation(svgSide, filteredPlot, state.selectedId, "side", handleElevationSelect, library, bgSide, state.showBeam);
       }
@@ -1358,39 +1390,84 @@ function scheduleDragRender(viewType) {
   });
 }
 
-// 平面図のズーム: Shift+ホイールでカーソル中心に拡大/縮小。0キーでリセット(自動フィット)。
-const PLOT_ZOOM_MAX = 8;
-function resetPlotZoom() {
-  if (state.plotViewBox) { state.plotViewBox = null; render(); }
+// 3ビュー(平面図/正面図/側面図)共通のズーム・パン: Shift+ホイールでカーソル中心ズーム、
+// Shiftなしホイールでパン。0キーで3ビュー一括リセット(自動フィット)。
+const VIEW_ZOOM_MAX = 8;
+
+function getViewZoomConfig(viewType) {
+  if (viewType === "plot") {
+    const bg = state.project.background, meta = state.project.meta;
+    let baseW = (meta.plotWidth || 10000) + 2500;
+    if (bg.image && bg.width) baseW = bg.width;
+    return {
+      baseW,
+      disabled: state.currentView !== "plot" || (state.project.meta.showBorder && state.plotLayout === "top"),
+      get: () => state.plotViewBox,
+      set: (vb) => { state.plotViewBox = vb; }
+    };
+  }
+  const isVisible = state.plotLayout === "split" || state.plotLayout === viewType;
+  const showBorder = state.plotLayout === viewType && !!state.project.meta.showBorder;
+  return {
+    baseW: 1000,
+    disabled: state.currentView !== "plot" || !isVisible || showBorder,
+    get: () => (viewType === "front" ? state.frontViewBox : state.sideViewBox),
+    set: (vb) => {
+      if (viewType === "front") state.frontViewBox = vb;
+      else state.sideViewBox = vb;
+    }
+  };
 }
-svg.addEventListener("wheel", e => {
-  if (!e.shiftKey) return;                 // Shift+ホイールのみズーム
-  if (state.currentView !== "plot") return;
-  if (state.project.meta.showBorder && state.plotLayout === "top") return; // 図面枠表示中は無効
-  const rect = svg.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
-  const vbAttr = svg.getAttribute("viewBox");
-  if (!vbAttr) return;
-  e.preventDefault();
-  const [x, y, w, h] = vbAttr.split(/\s+/).map(Number);
-  // 自動フィット時のベース幅(これより広い viewBox にはしない=フィットに戻す)
-  const bg2 = state.project.background, meta2 = state.project.meta;
-  let baseW = (meta2.plotWidth || 10000) + 2500;
-  if (bg2.image && bg2.width) baseW = bg2.width;
-  // カーソルのコンテンツ座標(ズーム後も同じ点がカーソル下に来るようにする)
-  const fx = (e.clientX - rect.left) / rect.width;
-  const fy = (e.clientY - rect.top) / rect.height;
-  const cx = x + fx * w, cy = y + fy * h;
-  const factor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 上スクロール=拡大(viewBox縮小)
-  let nw = w * factor;
-  const minW = baseW / PLOT_ZOOM_MAX;          // 最大ズーム
-  if (nw < minW) nw = minW;
-  if (nw >= baseW) { resetPlotZoom(); return; } // フィット相当まで縮小=リセット
-  const nh = nw * (h / w);
-  const nx = cx - fx * nw, ny = cy - fy * nh;
-  state.plotViewBox = { x: nx, y: ny, w: nw, h: nh };
-  svg.setAttribute("viewBox", `${nx} ${ny} ${nw} ${nh}`); // 即時反映(フル再描画なし)
-}, { passive: false });
+
+function resetAllViewZoom() {
+  let changed = false;
+  if (state.plotViewBox) { state.plotViewBox = null; changed = true; }
+  if (state.frontViewBox) { state.frontViewBox = null; changed = true; }
+  if (state.sideViewBox) { state.sideViewBox = null; changed = true; }
+  if (changed) render();
+}
+
+function attachWheelZoomPan(svgEl, viewType) {
+  svgEl.addEventListener("wheel", e => {
+    const cfg = getViewZoomConfig(viewType);
+    if (cfg.disabled) return;
+    const rect = svgEl.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const vbAttr = svgEl.getAttribute("viewBox");
+    if (!vbAttr) return;
+    e.preventDefault();
+    const [x, y, w, h] = vbAttr.split(/\s+/).map(Number);
+
+    if (e.shiftKey) {
+      // ズーム: カーソル位置のコンテンツ座標を保ったまま拡大縮小
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      const cx = x + fx * w, cy = y + fy * h;
+      const factor = e.deltaY < 0 ? 0.85 : 1 / 0.85; // 上スクロール=拡大(viewBox縮小)
+      let nw = w * factor;
+      const minW = cfg.baseW / VIEW_ZOOM_MAX; // 最大ズーム
+      if (nw < minW) nw = minW;
+      if (nw >= cfg.baseW) { // フィット相当まで縮小=リセット
+        if (cfg.get()) { cfg.set(null); render(); }
+        return;
+      }
+      const nh = nw * (h / w);
+      const nx = cx - fx * nw, ny = cy - fy * nh;
+      cfg.set({ x: nx, y: ny, w: nw, h: nh });
+      svgEl.setAttribute("viewBox", `${nx} ${ny} ${nw} ${nh}`); // 即時反映(フル再描画なし)
+    } else {
+      // パン: 現在のviewBox幅に応じたスクロール量で平行移動(ズーム幅は変えない)
+      const nx = x + e.deltaX * (w / rect.width);
+      const ny = y + e.deltaY * (h / rect.height);
+      cfg.set({ x: nx, y: ny, w, h });
+      svgEl.setAttribute("viewBox", `${nx} ${ny} ${w} ${h}`);
+    }
+  }, { passive: false });
+}
+
+attachWheelZoomPan(svg, "plot");
+attachWheelZoomPan(svgFront, "front");
+attachWheelZoomPan(svgSide, "side");
 svg.addEventListener("mousedown", e => {
   // 1. ポート（出力ポート）クリックの判定
   const port = e.target.closest("circle.port-out");
@@ -1761,17 +1838,25 @@ window.addEventListener("keydown", e => {
   if (e.target && e.target.matches && e.target.matches("input, textarea")) return;
   if (e.isComposing) return;
 
-  // 0 キーで平面図のズームをリセット(自動フィットに戻す)
+  // 0 キーで平面図・正面図・側面図のズーム/パンをリセット(自動フィットに戻す)
   if (e.key === "0" && !e.metaKey && !e.ctrlKey) {
-    resetPlotZoom();
+    resetAllViewZoom();
     return;
   }
 
-  // Command + Z または Ctrl + Z で Undo
-  const isUndo = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z";
+  // Command + Z または Ctrl + Z で Undo（Shiftが押されていたらRedo扱いにするため除外）
+  const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z";
   if (isUndo) {
     e.preventDefault();
     undo();
+    return;
+  }
+
+  // Command + Shift + Z または Ctrl + Shift + Z で Redo
+  const isRedo = (e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "z";
+  if (isRedo) {
+    e.preventDefault();
+    redo();
     return;
   }
 
